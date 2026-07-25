@@ -1,150 +1,151 @@
-----------------------------------------------------------------------------------------------------
+/*
+    Layoffs Data Cleaning
+    SQL Server
 
--- Data Cleaning
+    Source table:
+    [SQL data cleaning].[dbo].[layoffs$]
 
-select * from [SQL data cleaning].dbo.layoffs$
+    The script creates and cleans a staging table so that the original
+    imported data remains unchanged.
+*/
 
-select DATA_TYPE,COLUMN_NAME 
-from INFORMATION_SCHEMA.COLUMNS
-where TABLE_SCHEMA='dbo' AND  TABLE_NAME='layoffs$';
+USE [SQL data cleaning];
 
--- Create an empty table with the same structure
-SELECT TOP 0 *
-INTO layoffs_staging
-FROM [SQL data cleaning].dbo.layoffs$
+-------------------------------------------------------------------------------
+-- 1. Create a fresh staging table
+-------------------------------------------------------------------------------
 
--- Copy data from the existing table to the new table
-INSERT INTO layoffs_staging
+IF OBJECT_ID('dbo.layoffs_staging', 'U') IS NOT NULL
+    DROP TABLE dbo.layoffs_staging;
+
 SELECT *
-FROM [SQL data cleaning].dbo.layoffs$
+INTO dbo.layoffs_staging
+FROM dbo.[layoffs$];
 
-select * from layoffs_staging
+-------------------------------------------------------------------------------
+-- 2. Convert text representations of missing values to SQL NULL
+-------------------------------------------------------------------------------
 
+UPDATE dbo.layoffs_staging
+SET industry = NULL
+WHERE industry IS NULL
+   OR LTRIM(RTRIM(industry)) = ''
+   OR UPPER(LTRIM(RTRIM(industry))) = 'NULL';
 
----- 1.	Remove Duplicates
+UPDATE dbo.layoffs_staging
+SET total_laid_off = NULL
+WHERE UPPER(LTRIM(RTRIM(CONVERT(varchar(100), total_laid_off)))) = 'NULL';
 
-select * from layoffs_staging
-with duplicate_CTE As
-(
-Select *,
-ROW_NUMBER() over(
-                  partition by 
-				  company,
-				  location,
-				  industry, 
-				  total_laid_off,
-				  percentage_laid_off,
-				  'date',
-				  stage,
-				  country,
-				  funds_raised_millions
-				  Order by funds_raised_millions)AS row_num
-from layoffs_staging
-)
-select * from duplicate_CTE
-where row_num>1
+UPDATE dbo.layoffs_staging
+SET percentage_laid_off = NULL
+WHERE UPPER(LTRIM(RTRIM(CONVERT(varchar(100), percentage_laid_off)))) = 'NULL';
 
+UPDATE dbo.layoffs_staging
+SET funds_raised_millions = NULL
+WHERE UPPER(LTRIM(RTRIM(CONVERT(varchar(100), funds_raised_millions)))) = 'NULL';
 
+-------------------------------------------------------------------------------
+-- 3. Standardize text values
+-------------------------------------------------------------------------------
 
+UPDATE dbo.layoffs_staging
+SET company = LTRIM(RTRIM(company));
 
+UPDATE dbo.layoffs_staging
+SET industry = 'Crypto'
+WHERE industry LIKE 'Crypto%';
 
----- 2. Standarize data
+UPDATE dbo.layoffs_staging
+SET country = 'United States'
+WHERE country LIKE 'United States%';
 
-Select company, TRIM(company)
-from layoffs_staging
+-------------------------------------------------------------------------------
+-- 4. Convert the date field
+-------------------------------------------------------------------------------
 
-update layoffs_staging
-set company= TRIM(company)
+ALTER TABLE dbo.layoffs_staging
+ADD layoff_date date;
 
---- changing date format
+UPDATE dbo.layoffs_staging
+SET layoff_date = TRY_CONVERT(date, [date], 101);
 
-Select date, CONVERT(date,date)
-from layoffs_staging
-
-Alter table layoffs_staging
-Add Dates date
-
-Update layoffs_staging
-set Dates=CONVERT(date,date)
-
-select * from layoffs_staging
-
-ALTER TABLE layoffs_staging
+ALTER TABLE dbo.layoffs_staging
 DROP COLUMN [date];
 
------ Changing data
+-------------------------------------------------------------------------------
+-- 5. Fill missing industries from matching company and location records
+-------------------------------------------------------------------------------
 
-select * from layoffs_staging
-where industry like 'crypto%'
+;WITH IndustryLookup AS
+(
+    SELECT
+        company,
+        location,
+        MAX(industry) AS industry
+    FROM dbo.layoffs_staging
+    WHERE industry IS NOT NULL
+    GROUP BY company, location
+)
+UPDATE s
+SET s.industry = i.industry
+FROM dbo.layoffs_staging AS s
+INNER JOIN IndustryLookup AS i
+    ON s.company = i.company
+   AND s.location = i.location
+WHERE s.industry IS NULL;
 
-update layoffs_staging
-set industry='crypto'
-where industry like 'crypto%'
+-------------------------------------------------------------------------------
+-- 6. Remove duplicate records
+--    One record is retained from each exact duplicate group.
+-------------------------------------------------------------------------------
 
-select distinct country from layoffs_staging
-order by 1
+;WITH DuplicateRows AS
+(
+    SELECT *,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY
+                company,
+                location,
+                industry,
+                total_laid_off,
+                percentage_laid_off,
+                layoff_date,
+                stage,
+                country,
+                funds_raised_millions
+            ORDER BY (SELECT NULL)
+        ) AS row_num
+    FROM dbo.layoffs_staging
+)
+DELETE FROM DuplicateRows
+WHERE row_num > 1;
 
-select country from layoffs_staging
-where country like 'United States.%'
+-------------------------------------------------------------------------------
+-- 7. Remove records with no reported layoff amount or percentage
+-------------------------------------------------------------------------------
 
-update layoffs_staging
-set country='United States'
-where country like 'United States%'
+DELETE FROM dbo.layoffs_staging
+WHERE
+    NULLIF(
+        NULLIF(
+            UPPER(LTRIM(RTRIM(CONVERT(varchar(100), total_laid_off)))),
+            ''
+        ),
+        'NULL'
+    ) IS NULL
+AND
+    NULLIF(
+        NULLIF(
+            UPPER(LTRIM(RTRIM(CONVERT(varchar(100), percentage_laid_off)))),
+            ''
+        ),
+        'NULL'
+    ) IS NULL;
 
-
------ 3.Null values or blank values
-
-Select * from layoffs_staging
-where percentage_laid_off Is null and total_laid_off is null
-
-Select *  from layoffs_staging
-where industry is null or industry=''
-
-
-Select *  from layoffs_staging
-where company like 'ball%'
-
-update layoffs_staging 
-set industry=NULL
-where industry=''
-
-select t1.industry,t2.industry from layoffs_staging t1
-join layoffs_staging t2
-on t1.company=t2.company And t1.location=t2.location
-where (t1.industry is null) and t2.industry is not null
-
-UPDATE t1
-SET t1.industry = t2.industry
-FROM layoffs_staging t1
-JOIN layoffs_staging t2
-ON t1.company = t2.company AND t1.location = t2.location
-WHERE t1.industry IS NULL AND t2.industry IS NOT NULL;
-
-
------ 4. Remove any columns
-
-select * from layoffs_staging
+-------------------------------------------------------------------------------
+-- 8. Review the cleaned data
+-------------------------------------------------------------------------------
 
 SELECT *
-FROM layoffs_staging
-WHERE total_laid_off IS NULL AND percentage_laid_off IS NULL;
-
-
-SELECT *
-FROM layoffs_staging
-WHERE TRIM(total_laid_off) IS NULL AND TRIM(percentage_laid_off) IS NULL;
-
--- Find rows where percentage_laid_off appears empty or null but isn't
-SELECT *, LEN(percentage_laid_off) AS len, DATALENGTH(percentage_laid_off) AS data_len
-FROM layoffs_staging
-WHERE percentage_laid_off IS NULL OR LEN(percentage_laid_off) = 0;
-
--- Update rows where percentage_laid_off has hidden characters to NULL
-UPDATE layoffs_staging
-SET percentage_laid_off = NULL
-WHERE DATALENGTH(percentage_laid_off) = 0;
-
-
-
-alter table layoffs_staing
-drop column row_num
+FROM dbo.layoffs_staging;

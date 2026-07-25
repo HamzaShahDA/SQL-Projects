@@ -1,156 +1,164 @@
-------------------------------------------------------------------------------------------------------------------
 /*
-Cleaning Data in SQL
+    Housing Data Cleaning
+    SQL Server
 
+    Source table:
+    [SQL data cleaning].[dbo].[Nashville Housing Data for Data Cleaning (reuploaded)]
+
+    The script creates and cleans a separate working table so that the
+    original imported data remains unchanged.
 */
 
-Select * from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
+USE [SQL data cleaning];
 
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- 1. Create a fresh working table
+-------------------------------------------------------------------------------
 
--- Standarize Dates
-Select SaleDateConverted, Convert(Date,SaleDate)
-from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
+IF OBJECT_ID('dbo.nashville_housing_clean', 'U') IS NOT NULL
+    DROP TABLE dbo.nashville_housing_clean;
 
-Update [Nashville Housing Data for Data Cleaning (reuploaded)]
-set SaleDate= Convert(Date,SaleDate)
+SELECT *
+INTO dbo.nashville_housing_clean
+FROM dbo.[Nashville Housing Data for Data Cleaning (reuploaded)];
 
-Alter table [Nashville Housing Data for Data Cleaning (reuploaded)]
-Add SaleDateConverted Date;
+-------------------------------------------------------------------------------
+-- 2. Standardize the sale date
+-------------------------------------------------------------------------------
 
-Update [Nashville Housing Data for Data Cleaning (reuploaded)]
-set SaleDateConverted= Convert(Date,SaleDate)
+ALTER TABLE dbo.nashville_housing_clean
+ADD SaleDateConverted date;
 
+UPDATE dbo.nashville_housing_clean
+SET SaleDateConverted = TRY_CONVERT(date, SaleDate);
 
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
--- Populate Property Address Data
-Select *
-from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
---Where PropertyAddress is null
-order by ParcelID
+-------------------------------------------------------------------------------
+-- 3. Fill missing property addresses
+--    Records with the same ParcelID normally refer to the same property.
+-------------------------------------------------------------------------------
 
-
-Select  a.ParcelID,a.PropertyAddress,b.ParcelID,b.PropertyAddress, ISNULL(a.PropertyAddress, b.PropertyAddress)
-from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)] a
-join [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)] b
-on a.ParcelID=b.ParcelID And a.UniqueID!=b.UniqueID
-where a.PropertyAddress is null
-
-Update a
-set PropertyAddress=ISNULL(a.PropertyAddress, b.PropertyAddress)
-from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)] a
-join [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)] b
-on a.ParcelID=b.ParcelID And a.UniqueID!=b.UniqueID
-where a.PropertyAddress is null
-
-
-
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
--- Breaking out Address into Individual Columns (Address, city , state)
-
-Select PropertyAddress
-from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
---Where PropertyAddress is null
---order by ParcelID
-
-
-Select SUBSTRING(PropertyAddress,1, CHARINDEX(',',PropertyAddress)-1) as Address
-,SUBSTRING(PropertyAddress,CHARINDEX(',',PropertyAddress)+1,Len(PropertyAddress)) as Address
-from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-
-Alter table [Nashville Housing Data for Data Cleaning (reuploaded)]
-Add PropertySlitAddress VarChar(255);
-
-Update [Nashville Housing Data for Data Cleaning (reuploaded)]
-set PropertySlitAddress= SUBSTRING(PropertyAddress,1, CHARINDEX(',',PropertyAddress)-1) 
-
-Alter table [Nashville Housing Data for Data Cleaning (reuploaded)]
-Add PropertySplitCity VarChar(255);
-
-Update [Nashville Housing Data for Data Cleaning (reuploaded)]
-set PropertySplitCity= SUBSTRING(PropertyAddress,CHARINDEX(',',PropertyAddress)+1,Len(PropertyAddress))
-
-Select * from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-
-Select OwnerAddress from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-
-Select 
-PARSENAME(REPLACE(OwnerAddress,',','.'),3),
-PARSENAME(REPLACE(OwnerAddress, ',' , '.'),2),
-PARSENAME(REPLACE(OwnerAddress,',','.'),1)
-From [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-
-Alter table [Nashville Housing Data for Data Cleaning (reuploaded)]
-Add OwnerSplitAddress VarChar(255);
-
-Update [Nashville Housing Data for Data Cleaning (reuploaded)]
-set OwnerSplitAddress= PARSENAME(REPLACE(OwnerAddress,',','.'),3)
-
-Alter table [Nashville Housing Data for Data Cleaning (reuploaded)]
-Add OwnerSplitCity VarChar(255);
-
-Update [Nashville Housing Data for Data Cleaning (reuploaded)]
-set OwnerSplitCity= PARSENAME(REPLACE(OwnerAddress,',','.'),2)
-
-Alter table [Nashville Housing Data for Data Cleaning (reuploaded)]
-Add OwnerSplitState VarChar(255);
-
-Update [Nashville Housing Data for Data Cleaning (reuploaded)]
-set OwnerSplitState= PARSENAME(REPLACE(OwnerAddress,',','.'),1)
-
-Select * FROM [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-
-ALTER TABLE  [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-DROP COLUMN PropertySplitAddress;
-
-ALTER TABLE [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-DROP COLUMN OwnerPropertySplitAddress;
-
-
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
--- Change Y and N into Yes or No in "Sold as Vacant" field
-
-Select Distinct(SoldAsVacant), Count(SoldAsVacant) 
-FROM [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-Group by SoldAsVacant
-Order by SoldAsVacant
-
-Select SoldAsVacant,
-Case When SoldAsVacant= 'Y' then 'Yes'
-when SoldAsVacant='N' then 'No'
-else SoldAsVacant
-end
-FROM [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
--- Remove Duplicates
-WITH RowNumCTE AS(
-Select *,
-     ROW_NUMBER()Over (
-     Partition by
-	    ParcelID,
-	    PropertyAddress,
-		Saleprice,
-		SaleDate,
-		LegalReference
-		Order BY 
-		  UniqueID
-		  )row_num
-from [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
+;WITH AddressLookup AS
+(
+    SELECT
+        ParcelID,
+        MAX(PropertyAddress) AS PropertyAddress
+    FROM dbo.nashville_housing_clean
+    WHERE PropertyAddress IS NOT NULL
+    GROUP BY ParcelID
 )
-Select *
-From RownumCTE
-where row_num>1
---order by PropertyAddress
+UPDATE h
+SET h.PropertyAddress = a.PropertyAddress
+FROM dbo.nashville_housing_clean AS h
+INNER JOIN AddressLookup AS a
+    ON h.ParcelID = a.ParcelID
+WHERE h.PropertyAddress IS NULL;
 
----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+-- 4. Split the property address into address and city
+-------------------------------------------------------------------------------
 
---Delete Unused Column
-Select *
-From [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
+ALTER TABLE dbo.nashville_housing_clean
+ADD
+    PropertySplitAddress varchar(255),
+    PropertySplitCity varchar(255);
 
-Alter Table [SQL data cleaning].dbo.[Nashville Housing Data for Data Cleaning (reuploaded)]
-Drop Column PropertyAddress,OwnerAddress,TaxDistrict
+UPDATE dbo.nashville_housing_clean
+SET
+    PropertySplitAddress =
+        LTRIM(RTRIM(LEFT(PropertyAddress, CHARINDEX(',', PropertyAddress) - 1))),
+    PropertySplitCity =
+        LTRIM(RTRIM(SUBSTRING(
+            PropertyAddress,
+            CHARINDEX(',', PropertyAddress) + 1,
+            LEN(PropertyAddress)
+        )))
+WHERE PropertyAddress IS NOT NULL
+  AND CHARINDEX(',', PropertyAddress) > 0;
+
+-------------------------------------------------------------------------------
+-- 5. Split the owner address into address, city, and state
+-------------------------------------------------------------------------------
+
+ALTER TABLE dbo.nashville_housing_clean
+ADD
+    OwnerSplitAddress varchar(255),
+    OwnerSplitCity varchar(255),
+    OwnerSplitState varchar(255);
+
+UPDATE dbo.nashville_housing_clean
+SET
+    OwnerSplitAddress =
+        LTRIM(RTRIM(PARSENAME(REPLACE(OwnerAddress, ',', '.'), 3))),
+    OwnerSplitCity =
+        LTRIM(RTRIM(PARSENAME(REPLACE(OwnerAddress, ',', '.'), 2))),
+    OwnerSplitState =
+        LTRIM(RTRIM(PARSENAME(REPLACE(OwnerAddress, ',', '.'), 1)))
+WHERE OwnerAddress IS NOT NULL;
+
+-------------------------------------------------------------------------------
+-- 6. Standardize SoldAsVacant values
+-------------------------------------------------------------------------------
+
+UPDATE dbo.nashville_housing_clean
+SET SoldAsVacant =
+    CASE
+        WHEN SoldAsVacant = 'Y' THEN 'Yes'
+        WHEN SoldAsVacant = 'N' THEN 'No'
+        ELSE SoldAsVacant
+    END;
+
+-------------------------------------------------------------------------------
+-- 7. Remove duplicate records
+--    One record is retained from each exact duplicate group.
+-------------------------------------------------------------------------------
+
+;WITH DuplicateRows AS
+(
+    SELECT *,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY
+                ParcelID,
+                PropertyAddress,
+                SalePrice,
+                SaleDateConverted,
+                LegalReference
+            ORDER BY (SELECT NULL)
+        ) AS row_num
+    FROM dbo.nashville_housing_clean
+)
+DELETE FROM DuplicateRows
+WHERE row_num > 1;
+
+-------------------------------------------------------------------------------
+-- 8. Remove columns replaced by cleaned address fields
+-------------------------------------------------------------------------------
+
+ALTER TABLE dbo.nashville_housing_clean
+DROP COLUMN PropertyAddress, OwnerAddress, TaxDistrict;
+
+-------------------------------------------------------------------------------
+-- 9. Review the cleaned data
+-------------------------------------------------------------------------------
+
+SELECT *
+FROM NewTable nt ;
+
+SELECT name
+FROM sys.databases
+ORDER BY name;
+
+SELECT
+    'MyDatabase' AS database_name,
+    TABLE_SCHEMA,
+    TABLE_NAME
+FROM MyDatabase.INFORMATION_SCHEMA.TABLES
+
+UNION ALL
+
+SELECT
+    'SalesDB' AS database_name,
+    TABLE_SCHEMA,
+    TABLE_NAME
+FROM SalesDB.INFORMATION_SCHEMA.TABLES
+ORDER BY database_name, TABLE_NAME;
